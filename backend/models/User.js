@@ -1,16 +1,24 @@
 const mongoose = require("mongoose");
 
-const UserSchema = new mongoose.Schema({
+const deviceSchema = new mongoose.Schema({
+  uuid: String,
+  fingerprint: String,
+  lastUsed: Date
+});
+
+const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
 
-  devices: { type: [String], default: [] },
-  lastLoginIP: { type: String },
+  devices: [deviceSchema],
+
+  lastLoginIP: String,
 
   failedAttempts: { type: Number, default: 0 },
-  blockUntil: { type: Date },
+  blockUntil: Date,
 
-  otpSecret: { type: String }
-});
+  otpCode: String,
+  otpExpires: Date
+}, { timestamps: true });
 
-module.exports = mongoose.model("User", UserSchema);
+module.exports = mongoose.model("User", userSchema);

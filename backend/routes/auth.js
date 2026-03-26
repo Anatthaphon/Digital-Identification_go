@@ -1,15 +1,14 @@
-require("dotenv").config(); 
+require("dotenv").config();
 
 const express = require("express");
 const router = express.Router();
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
-const nodemailer = require("nodemailer"); // ✅ เพิ่ม
+const nodemailer = require("nodemailer");
+
 const User = require("../models/User");
 
-// =====================
-// Mail Config
-// =====================
+// ================= MAIL =================
 const transporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
@@ -18,69 +17,85 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// =====================
-// Helper: JWT
-// =====================
+// ================= JWT =================
 const createToken = (user) => {
-  return jwt.sign({ id: user._id }, "your_jwt_secret", { expiresIn: "1h" });
+  return jwt.sign(
+    { id: user._id },
+    process.env.JWT_SECRET,
+    { expiresIn: "1h" }
+  );
 };
 
-// =====================
-// Risk Score (ADI)
-// =====================
-const calculateRisk = (user, deviceId, ip) => {
+// ================= RISK =================
+const calculateRisk = async (user, uuid, fingerprint, ip) => {
   let score = 0;
 
-  if (!user.devices.includes(deviceId)) score += 30;
-  if (user.lastLoginIP && user.lastLoginIP !== ip) score += 30;
-  if (user.failedAttempts >= 3) score += 40;
+  const device = user.devices.find(d => d.uuid === uuid);
 
-  if (score >= 70) return "high";
-  if (score >= 30) return "medium";
+  // ❌ new device
+  if (!device) score += 40;
+
+  // ❌ fingerprint mismatch
+  if (device && device.fingerprint) {
+    const match = await bcrypt.compare(fingerprint, device.fingerprint);
+    if (!match) score += 50;
+  }
+
+  // ❌ IP changed
+  if (user.lastLoginIP && user.lastLoginIP !== ip) {
+    score += 20;
+  }
+
+  // ❌ brute force
+  if (user.failedAttempts >= 3) {
+    score += 40;
+  }
+
+  if (score >= 80) return "high";
+  if (score >= 40) return "medium";
   return "low";
 };
 
-// =====================
-// REGISTER
-// =====================
+// ================= REGISTER =================
 router.post("/register", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    const existingUser = await User.findOne({ email });
-    if (existingUser)
+    const exists = await User.findOne({ email });
+    if (exists) {
       return res.status(400).json({ message: "User already exists" });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const newUser = new User({
+    const user = new User({
       email,
       password: hashedPassword,
     });
 
-    await newUser.save();
+    await user.save();
 
     res.status(201).json({ message: "User registered successfully" });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
 
-// =====================
-// LOGIN
-// =====================
+// ================= LOGIN =================
 router.post("/login", async (req, res) => {
   try {
-    const { email, password, deviceId } = req.body;
+    const { email, password, uuid, fingerprint } = req.body;
     const ip = req.ip;
 
     const user = await User.findOne({ email });
 
-    if (!user)
+    if (!user) {
       return res.status(400).json({ message: "Invalid email or password" });
+    }
 
-    // 🔴 block check
+    // 🔴 BLOCK CHECK
     if (user.blockUntil && user.blockUntil > new Date()) {
       const remainingTime = Math.ceil(
         (user.blockUntil - new Date()) / 60000
@@ -92,15 +107,15 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // ✅ reset block
+    // reset block
     if (user.blockUntil && user.blockUntil <= new Date()) {
       user.failedAttempts = 0;
       user.blockUntil = null;
     }
 
+    // 🔐 PASSWORD CHECK
     const isMatch = await bcrypt.compare(password, user.password);
 
-    // ❌ password ผิด
     if (!isMatch) {
       user.failedAttempts += 1;
 
@@ -115,83 +130,15 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // ✅ reset attempts
+    // reset attempts
     user.failedAttempts = 0;
 
-    const risk = calculateRisk(user, deviceId, ip);
+    // 🧠 RISK CHECK
+    const risk = await calculateRisk(user, uuid, fingerprint, ip);
 
     // 🟢 LOW
     if (risk === "low") {
-      if (!user.devices.includes(deviceId)) {
-        user.devices.push(deviceId);
-      }
-
-      user.lastLoginIP = ip;
-      await user.save();
-
-      const token = createToken(user);
-      return res.json({ status: "ok", token });
-    }
-
-    // 🟡 MEDIUM → ส่ง OTP
-    if (risk === "medium") {
-      const otp = Math.floor(100000 + Math.random() * 900000).toString();
-
-      user.otpSecret = otp;
-      await user.save();
-
-      // ✅ ส่งเมลจริง
-      await transporter.sendMail({
-        from: `"ADI Security" <${process.env.EMAIL_USER}>`,
-        to: email,
-        subject: "Your OTP Code",
-        text: `Your OTP is: ${otp}`,
-      });
-
-      return res.json({
-        status: "otp_required",
-        message: "OTP sent to your email",
-      });
-    }
-
-    // 🔴 HIGH
-    if (risk === "high") {
-      user.blockUntil = new Date(Date.now() + 10 * 60 * 1000);
-      await user.save();
-
-      return res.json({
-        status: "blocked",
-        message: "High risk detected. Login blocked for 10 minutes",
-      });
-    }
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error" });
-  }
-});
-
-// =====================
-// VERIFY OTP
-// =====================
-router.post("/verify-otp", async (req, res) => {
-  try {
-    const { email, otp, deviceId } = req.body;
-    const ip = req.ip;
-
-    const user = await User.findOne({ email });
-
-    if (!user)
-      return res.status(400).json({ message: "User not found" });
-
-    if (user.otpSecret === otp) {
-      user.otpSecret = null;
-
-      if (!user.devices.includes(deviceId)) {
-        user.devices.push(deviceId);
-      }
-
-      user.lastLoginIP = ip;
-      await user.save();
+      await handleDevice(user, uuid, fingerprint, ip);
 
       const token = createToken(user);
 
@@ -201,11 +148,102 @@ router.post("/verify-otp", async (req, res) => {
       });
     }
 
-    return res.status(400).json({ message: "Invalid OTP" });
+    // 🟡 MEDIUM → OTP
+    if (risk === "medium") {
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+      user.otpCode = otp;
+      user.otpExpires = new Date(Date.now() + 5 * 60 * 1000);
+
+      await user.save(); // 🔥 ห้ามลืมบรรทัดนี้เด็ดขาด
+
+      console.log("OTP saved:", otp);
+
+      await transporter.sendMail({
+        to: email,
+        subject: "OTP Code",
+        text: `Your OTP is: ${otp}`,
+      });
+
+      return res.json({
+        status: "otp_required",
+      });
+    }
+
+    // 🔴 HIGH → BLOCK
+    user.blockUntil = new Date(Date.now() + 10 * 60 * 1000);
+    await user.save();
+
+    return res.json({
+      status: "blocked",
+      message: "High risk detected. Login blocked for 10 minutes",
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Server error" });
   }
 });
+
+// ================= VERIFY OTP =================
+router.post("/verify-otp", async (req, res) => {
+  try {
+    const { email, otp, uuid, fingerprint } = req.body;
+    const ip = req.ip;
+
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(400).json({ message: "User not found" });
+    }
+
+    // ❌ OTP invalid
+    if (
+      String(user.otpCode) !== String(otp) ||
+      !user.otpExpires ||
+      user.otpExpires < new Date()
+    ) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
+
+    // reset OTP
+    user.otpCode = null;
+    user.otpExpires = null;
+
+    await handleDevice(user, uuid, fingerprint, ip);
+
+    const token = createToken(user);
+
+    return res.json({
+      status: "ok",
+      token,
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Server error" });
+  }
+});
+
+// ================= DEVICE HANDLER =================
+const handleDevice = async (user, uuid, fingerprint, ip) => {
+  let device = user.devices.find(d => d.uuid === uuid);
+
+  if (!device) {
+    const hashedFp = await bcrypt.hash(fingerprint, 5);
+
+    user.devices.push({
+      uuid,
+      fingerprint: hashedFp,
+      lastUsed: new Date(),
+    });
+  } else {
+    device.lastUsed = new Date();
+  }
+
+  user.lastLoginIP = ip;
+
+  await user.save();
+};
 
 module.exports = router;
