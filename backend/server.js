@@ -1,20 +1,19 @@
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
-const authRoutes = require("./routes/auth");
+require("dotenv").config();
+const connectDB = require("./connectDB"); // << เรียกไฟล์ที่สร้าง
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
-require("dotenv").config();
+// Connect database
+connectDB();
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB Atlas connected"))
-  .catch((err) => console.error("MongoDB connection error:", err));
+// Routes
+const authRouter = require("./routes/auth");
+app.use("/api/auth", authRouter);
 
-app.use("/api/auth", authRoutes);
-
-const PORT = 5000;
+const PORT = process.env.PORT || 5001;
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
