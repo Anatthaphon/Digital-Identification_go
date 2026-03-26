@@ -88,7 +88,7 @@ router.post("/login", async (req, res) => {
 
       return res.json({
         status: "blocked",
-        message: `Account blocked. Try again in ${remainingTime} minute(s)`,
+        message: `Account blocked. Try again in ${remainingTime} minutes`,
       });
     }
 
