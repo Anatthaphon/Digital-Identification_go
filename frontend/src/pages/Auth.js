@@ -52,7 +52,7 @@ const validatePassword = (password) => {
     return;
   }
 
-  const res = await fetch("http://192.168.1.34:5000/api/auth/register", {
+  const res = await fetch("http://192.168.1.16:5001/api/auth/register", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
@@ -73,7 +73,7 @@ const validatePassword = (password) => {
 
   const { uuid, fingerprint } = await getDeviceInfo();
 
-  const res = await fetch("http://192.168.1.34:5000/api/auth/login", {
+  const res = await fetch("http://192.168.1.16:5001/api/auth/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -102,7 +102,7 @@ const validatePassword = (password) => {
 
   const { uuid, fingerprint } = await getDeviceInfo();
 
-  const res = await fetch("http://192.168.1.34:5000/api/auth/verify-otp", {
+  const res = await fetch("http://192.168.1.16:5001/api/auth/verify-otp", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
